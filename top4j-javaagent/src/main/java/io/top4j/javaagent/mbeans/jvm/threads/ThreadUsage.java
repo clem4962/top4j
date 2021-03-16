@@ -17,7 +17,10 @@
 package io.top4j.javaagent.mbeans.jvm.threads;
 
 import io.top4j.javaagent.config.Configurator;
+import io.top4j.javaagent.mbeans.jvm.internals.HotspotInternals;
+import io.top4j.javaagent.mbeans.jvm.internals.HotspotInternalsMBean;
 
+import javax.management.JMX;
 import java.io.IOException;
 import java.lang.Thread.State;
 import java.lang.management.*;
@@ -42,6 +45,7 @@ public class ThreadUsage {
         long intervalBlockedTime = 0;
         double cpuUsage = 0.0;
         double userCpuUsage = 0.0;
+        boolean isSystemThread = false;
 
         private ThreadInfo(long id, long startTime) {
             this.id = id;
@@ -49,9 +53,22 @@ public class ThreadUsage {
         }
     }
 
+    private static class SystemThreadInfo extends ThreadInfo {
+
+        private SystemThreadInfo(long id, String name, long startTime) {
+            super(id, startTime);
+            this.name = name;
+            this.isSystemThread = true;
+        }
+    }
+
     private int numberOfProcessors;
     private final Map<Long, ThreadInfo> threadHistory =
             new HashMap<>();
+    // systemThreadMapping: map system thread names to pseudo threadids
+    private final Map<String, Long> systemThreadMapping = new HashMap();
+    // pesudo-thread ids for system threads (negative values)
+    private static long nextSystemThreadId = -1;
     volatile private double cpuUsage;
     private final Map<Long, ThreadInfo> threadHistoryCache =
             new HashMap<>();
@@ -64,7 +81,10 @@ public class ThreadUsage {
     volatile private long blockedThreadCount;
     volatile private long waitingThreadCount;
     volatile private long timedWaitingThreadCount;
+    volatile private long internalThreadCount;
+    volatile private boolean internalThreadCountAvailable;
     private final ThreadMXBean threadMXBean;
+    private HotspotInternalsMBean internalsMBean = null;
     private Map<Integer, TopThread> topThreadsMap;
     private Map<Integer, BlockedThread> blockedThreadsMap;
     private boolean threadContentionMonitoringEnabled;
@@ -79,6 +99,9 @@ public class ThreadUsage {
     private int threadCacheTTL;
     private long lastThreadCacheRefreshTime = 0;
     private long newThreadStartTime;
+    private long lastPauseTimeMillis;
+    private long lastSystemTimeMillis;
+    volatile private double pauseTimeOverhead;
 
     private static final Logger LOGGER = Logger.getLogger(ThreadUsage.class.getName());
 
@@ -89,6 +112,8 @@ public class ThreadUsage {
         this.setTopThreadsMap(topThreadsMap);
         this.topThreadCount = topThreadsMap.size();
         this.threadMXBean = ManagementFactory.getPlatformMXBean(config.getMBeanServerConnection(), ThreadMXBean.class);
+        if (config.isHotspotInternalsEnabled())
+            this.internalsMBean = getInternalsMXBean(config); // will be null if any failure
         final RuntimeMXBean runtimeMXBean = ManagementFactory.getPlatformMXBean(config.getMBeanServerConnection(), RuntimeMXBean.class);
         long jvmStartUpTime = System.nanoTime() - (runtimeMXBean.getUptime() * 1000000);
         this.newThreadStartTime = jvmStartUpTime;
@@ -208,6 +233,13 @@ public class ThreadUsage {
             hotMethods.update();
         }
 
+        // update % wall-clock time spent at safepoints
+        try { // protect this in case of unforeseen remote issues
+            //updatePauseTime();   not currently using this
+        } catch (Throwable t) {
+            LOGGER.fine("Failed to update pause time " + t.getMessage());
+        }
+
     }
 
     /**
@@ -224,6 +256,7 @@ public class ThreadUsage {
         long blockedThreadCount = 0;
         long waitingThreadCount = 0;
         long timedWaitingThreadCount = 0;
+        long internalThreadCount = 0;
         // iterate over ThreadUsage.ThreadInfo objects within threadHistory map and update with latest JMX ThreadMXBean ThreadInfo
         for (Map.Entry<Long, ThreadInfo> entry : threadHistory.entrySet()) {
 
@@ -232,39 +265,92 @@ public class ThreadUsage {
             final String name;
             State state;
             long id = threadInfo.id;
-            // get JMX ThreadInfo for thread ID from ThreadMXBean
-            java.lang.management.ThreadInfo jmxThreadInfo = threadMXBean.getThreadInfo(id);
-            if (jmxThreadInfo != null) {
-                id = jmxThreadInfo.getThreadId();
-                name = jmxThreadInfo.getThreadName();
-                state = jmxThreadInfo.getThreadState();
+
+
+            if (threadInfo.isSystemThread) {
+                // updates to endCpuTime and endTime already done in refreshSystemThreadHistory
+                internalThreadCount++;
             } else {
-                // assume thread died
-                threadInfo.active = false;
-                threadInfo.state = State.TERMINATED;
-                continue;
-            }
-            final long threadCpuTime = threadMXBean.getThreadCpuTime(id);
-            final long threadUserTime = threadMXBean.getThreadUserTime(id);
-            final long systemTime = System.nanoTime();
-            if (threadCpuTime == -1 || threadUserTime == -1) {
-                // assume thread died
-                threadInfo.active = false;
-                threadInfo.state = State.TERMINATED;
-                continue;
-            }
-            long threadBlockedTime = 0;
-            if (threadContentionMonitoringEnabled) {
-                threadBlockedTime = jmxThreadInfo.getBlockedTime();
+
+                long threadCpuTime = 0;
+                long threadUserTime = 0;
+                long systemTime = 0;
+                long threadBlockedTime = 0;
+
+                // get JMX ThreadInfo for thread ID from ThreadMXBean
+                java.lang.management.ThreadInfo jmxThreadInfo = threadMXBean.getThreadInfo(id);
+                if (jmxThreadInfo != null) {
+                    id = jmxThreadInfo.getThreadId();
+                    name = jmxThreadInfo.getThreadName();
+                    state = jmxThreadInfo.getThreadState();
+                } else {
+                    // assume thread died
+                    threadInfo.active = false;
+                    threadInfo.state = State.TERMINATED;
+                    continue;
+                }
+                threadCpuTime = threadMXBean.getThreadCpuTime(id);
+                threadUserTime = threadMXBean.getThreadUserTime(id);
+                systemTime = System.nanoTime();
+                if (threadCpuTime == -1 || threadUserTime == -1) {
+                    // assume thread died
+                    threadInfo.active = false;
+                    threadInfo.state = State.TERMINATED;
+                    continue;
+                }
+
+                if (threadContentionMonitoringEnabled) {
+                    threadBlockedTime = jmxThreadInfo.getBlockedTime();
+                }
+
+                // update ThreadInfo object
+                threadInfo.name = name;
+                threadInfo.state = state;
+                threadInfo.active = true;
+                threadInfo.endTime = systemTime;
+                threadInfo.endCpuTime = threadCpuTime;
+                threadInfo.endUserTime = threadUserTime;
+
+                // check thread state
+                if (state == null) {
+                    // assume thread has terminated
+                    state = Thread.State.TERMINATED;
+                }
+                // increment state specific thread counters
+                switch (state) {
+
+                    case NEW:
+                        break;
+                    case RUNNABLE:
+                        runnableThreadCount++;
+                        break;
+                    case BLOCKED:
+                        blockedThreadCount++;
+                        break;
+                    case WAITING:
+                        waitingThreadCount++;
+                        break;
+                    case TIMED_WAITING:
+                        timedWaitingThreadCount++;
+                        break;
+                    case TERMINATED:
+                        break;
+                    default:
+                        break;
+                }
+
+                if (threadContentionMonitoringEnabled) {
+                    // calculate interval blocked time
+                    threadInfo.intervalBlockedTime = threadBlockedTime - threadInfo.lastBlockedTime;
+                    // add intervalBlockedTime to blockedTimeMap
+                    blockedTimeMap.put(threadInfo.intervalBlockedTime, id);
+                    // persist this threadBlockedTime
+                    threadInfo.lastBlockedTime = threadBlockedTime;
+                }
+
             }
 
-            // update ThreadInfo object
-            threadInfo.name = name;
-            threadInfo.state = state;
-            threadInfo.active = true;
-            threadInfo.endTime = systemTime;
-            threadInfo.endCpuTime = threadCpuTime;
-            threadInfo.endUserTime = threadUserTime;
+
             long timeDiff = threadInfo.endTime - threadInfo.startTime;
             threadInfo.interval = timeDiff;
             // calculate CPU time in nano secs consumed during interval
@@ -284,49 +370,13 @@ public class ThreadUsage {
             // add threadUserCpuUsage to overall userCpuTime
             totalUserCpuTime += threadUserCpuUsage;
             // reset start timers for next iteration
-            threadInfo.startTime = systemTime;
-            threadInfo.startCpuTime = threadCpuTime;
-            threadInfo.startUserTime = threadUserTime;
-            if (threadContentionMonitoringEnabled) {
-                // calculate interval blocked time
-                threadInfo.intervalBlockedTime = threadBlockedTime - threadInfo.lastBlockedTime;
-                // add intervalBlockedTime to blockedTimeMap
-                blockedTimeMap.put(threadInfo.intervalBlockedTime, id);
-                // persist this threadBlockedTime
-                threadInfo.lastBlockedTime = threadBlockedTime;
-            }
-
-            // check thread state
-            if (state == null) {
-                // assume thread has terminated
-                state = Thread.State.TERMINATED;
-            }
+            threadInfo.startTime = threadInfo.endTime;
+            threadInfo.startCpuTime = threadInfo.endCpuTime;
+            threadInfo.startUserTime = threadInfo.endUserTime;
 
             // increment threadCount
             threadCount++;
 
-            // increment state specific thread counters
-            switch (state) {
-
-                case NEW:
-                    break;
-                case RUNNABLE:
-                    runnableThreadCount++;
-                    break;
-                case BLOCKED:
-                    blockedThreadCount++;
-                    break;
-                case WAITING:
-                    waitingThreadCount++;
-                    break;
-                case TIMED_WAITING:
-                    timedWaitingThreadCount++;
-                    break;
-                case TERMINATED:
-                    break;
-                default:
-                    break;
-            }
         }
 
         // update cpuTimeMap
@@ -358,9 +408,12 @@ public class ThreadUsage {
             this.setWaitingThreadCount(waitingThreadCount);
             // update timedWaitingThreadCount
             this.setTimedWaitingThreadCount(timedWaitingThreadCount);
+            this.setInternalThreadCount(internalThreadCount);
+
         }
 
     }
+
 
     private synchronized void resetActivityTracker() {
 
@@ -405,10 +458,53 @@ public class ThreadUsage {
             }
         }
 
+        try {
+            refreshInternalThreadHistory();
+        } catch (Throwable t) {
+            LOGGER.finest("error updating internal thread history: " + t.getMessage());
+        }
+
         // clean up threadHistory
         cleanUpThreadHistory();
 
     }
+
+    /**
+     * Updates threadHistory Map with system threads
+     */
+    private void refreshInternalThreadHistory() {
+
+        internalThreadCountAvailable = false; // can we use internalThreadCount? not yet.
+
+        if (internalsMBean == null)
+            return;
+
+        Map<String, Long> map = internalsMBean.getInternalThreadCpuTimes();
+        if (map == null)
+            return;
+
+        internalThreadCountAvailable = true;
+        for (String name : map.keySet()) {
+            Long cpu = map.get(name);
+            if (cpu == null)
+                continue;
+            Long id = systemThreadMapping.get(name);
+            if (id == null) {
+                id = new Long(nextSystemThreadId--);
+                systemThreadMapping.put(name, id);
+            }
+            ThreadInfo threadInfo = threadHistory.get(id);
+            if (threadInfo == null) {
+                threadInfo = new SystemThreadInfo(id, name, newThreadStartTime);
+                threadHistory.put(id, threadInfo);
+            } else {
+                threadInfo.active = true;
+            }
+            threadInfo.endTime = System.nanoTime();
+            threadInfo.endCpuTime = cpu;
+        }
+    }
+
 
     /**
      * Get CPU usage.
@@ -489,8 +585,9 @@ public class ThreadUsage {
         long threadBlockedTime;
         int blockedThreadLimit;
         // handle situation where threadCount less than blockedThreadsCount
-        if (threadCount < blockedThreadsCount) {
-            blockedThreadLimit = (int) threadCount;
+        // NB internal threads are not considered for blocked processing so exclude them
+        if (threadCount - internalThreadCount < blockedThreadsCount) {
+            blockedThreadLimit = (int) (threadCount - internalThreadCount);
         } else {
             blockedThreadLimit = blockedThreadsCount;
         }
@@ -656,6 +753,21 @@ public class ThreadUsage {
         this.timedWaitingThreadCount = timedWaitingThreadCount;
     }
 
+
+    private void setInternalThreadCount(long internalThreadCount) {
+        this.internalThreadCount = internalThreadCount;
+    }
+
+
+    /**
+     * @return number of identified internal threads, if enabled and successfully retrieved; -1 means data not available.
+     */
+    public long getInternalThreadCount() {
+        if (!this.internalThreadCountAvailable)
+            return -1;
+        return this.internalThreadCount;
+    }
+
     private void initHotMethodTracker(Map<Integer, TopThread> topThreadsMap, HotMethods hotMethods, long pollInterval) {
 
         // create new TimerTask to run hot method tracker
@@ -750,4 +862,54 @@ public class ThreadUsage {
         return ((double) cpuTimeDiff / (double) timeDiff) * 100;
     }
 
+    private HotspotInternalsMBean getInternalsMXBean(Configurator config) {
+        try {
+            HotspotInternalsMBean proxy = JMX.newMBeanProxy(config.getMBeanServerConnection(), new HotspotInternals().getObjectName(), HotspotInternalsMBean.class);
+            LOGGER.finest("Obtained proxy to HotspotInternalsMBean");
+            return proxy;
+        } catch (Throwable t) {
+            LOGGER.finest("Unable to access HotspotInternalsMBean: " + t.getMessage());
+            config.setHotspotInternalsEnabled(false);
+            return null;
+        }
+    }
+
+    private void updatePauseTime() {
+        if (internalsMBean == null)
+            return;
+
+        long systemTime = System.currentTimeMillis();
+        long pauseTime = internalsMBean.getTotalSafepointTime();
+
+        long intervalSystemTime = systemTime - lastSystemTimeMillis;
+        long intervalPauseTime = pauseTime - lastPauseTimeMillis;
+
+        lastSystemTimeMillis = systemTime;
+        lastPauseTimeMillis = pauseTime;
+
+        LOGGER.finer("Pause Overhead Interval Pause Time = " + intervalPauseTime);
+        LOGGER.finer("Pause Overhead Interval System Time = " + intervalSystemTime);
+
+        if (lastSystemTimeMillis == 0)
+            return;  // skip first call
+
+        double pauseOverhead = 0;
+        if (intervalSystemTime > 0) // protect from dive-by-zero accidents
+            pauseOverhead = ((double) intervalPauseTime / intervalSystemTime) * 100;
+
+        LOGGER.fine("Pause Overhead = " + pauseOverhead + "%");
+        this.pauseTimeOverhead = pauseOverhead;
+
+    }
+
+    // return percentage
+    public double getPauseTimeOverhead() {
+        return this.pauseTimeOverhead;
+    }
+
+
 }
+
+
+
+

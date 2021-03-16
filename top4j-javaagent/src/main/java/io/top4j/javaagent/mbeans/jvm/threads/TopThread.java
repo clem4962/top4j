@@ -60,6 +60,8 @@ public class TopThread implements TopThreadMXBean {
     }
 
     public State getThreadState() {
+        if (threadId < 0)
+            return null;
 
         // get current thread state
         State threadState = threadHelper.getThreadState(threadId);
@@ -81,24 +83,32 @@ public class TopThread implements TopThreadMXBean {
     }
 
     public String getStackTrace(int maxDepth) {
+        if (threadId < 0)
+            return null;
 
         return threadHelper.getStackTrace(threadId, maxDepth);
 
     }
 
     public String getStackTraceWithContext(int maxDepth) {
+        if (threadId < 0)
+            return null;
 
         return threadHelper.getStackTraceWithContext(threadId, maxDepth);
 
     }
 
     public StackTraceElement[] getStackTraceElements(int maxDepth) {
+        if (threadId < 0)
+            return null;
 
         return threadHelper.getStackTraceElements(threadId, maxDepth);
 
     }
 
     public StackTraceElement[] getStackTraceElements() {
+        if (threadId < 0)
+            return null;
 
         return threadHelper.getStackTraceElements(threadId);
 

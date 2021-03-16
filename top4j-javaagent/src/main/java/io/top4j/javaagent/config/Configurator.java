@@ -36,6 +36,9 @@ public class Configurator {
     private boolean threadContentionMonitoringEnabled;
     private boolean hotMethodProfilingEnabled;
     private boolean threadUsageCacheEnabled;
+    private boolean hotspotInternalsEnabled;
+    // jvmPid only set when running in console mode and hotspot internals enabled
+    private int jvmPid;
 
     private static final Logger LOGGER = Logger.getLogger(Configurator.class.getName());
 
@@ -83,6 +86,8 @@ public class Configurator {
 
         // set threadUsageCacheEnabled status
         this.threadUsageCacheEnabled = Boolean.parseBoolean(config.get("thread.usage.cache.enabled"));
+
+        this.hotspotInternalsEnabled = Boolean.parseBoolean(config.get("hotspot.internals.enabled"));
     }
 
     private void loadPropsFromClasspath(String propsFileName) {
@@ -229,6 +234,17 @@ public class Configurator {
         return this.threadUsageCacheEnabled;
     }
 
+    public boolean isHotspotInternalsEnabled() { return this.hotspotInternalsEnabled; }
+
+    public void setHotspotInternalsEnabled(boolean tf) { this.hotspotInternalsEnabled = tf; }
+
+    public int getRemoteJvmPid() { return jvmPid; }
+
+    public void setRemoteJvmPid(int jvmPid) {
+        this.jvmPid = jvmPid;
+    }
+
+
     public MBeanServerConnection getMBeanServerConnection() {
         return mBeanServerConnection;
     }
@@ -236,5 +252,6 @@ public class Configurator {
     public void setMBeanServerConnection(MBeanServerConnection mBeanServerConnection) {
         this.mBeanServerConnection = mBeanServerConnection;
     }
+
 
 }

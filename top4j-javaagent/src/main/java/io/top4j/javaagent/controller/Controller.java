@@ -16,6 +16,9 @@
 
 package io.top4j.javaagent.controller;
 
+import com.sun.tools.attach.VirtualMachine;
+
+import java.security.CodeSource;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Logger;
@@ -23,9 +26,12 @@ import java.util.logging.Logger;
 import io.top4j.javaagent.config.Configurator;
 import io.top4j.javaagent.config.Constants;
 import io.top4j.javaagent.mbeans.jvm.JVMStats;
+import io.top4j.javaagent.mbeans.jvm.internals.HotspotInternals;
+import io.top4j.javaagent.mbeans.jvm.internals.HotspotInternalsMBean;
 import io.top4j.javaagent.messaging.LoggerQueue;
 import io.top4j.javaagent.utils.MBeanHelper;
 
+import javax.management.JMX;
 import javax.management.MBeanServer;
 
 public final class Controller extends Thread {
@@ -39,6 +45,7 @@ public final class Controller extends Thread {
 
     /**
      * Create a polling thread to track JVM stats.
+     *
      */
     public Controller(Configurator config) {
         super("Top4J Monitor");
@@ -48,6 +55,52 @@ public final class Controller extends Thread {
         if (statsLoggerEnabled) {
             // create LoggerQueue
             this.loggerQueue = new LoggerQueue(100);
+        }
+
+
+        // If isHotspotInternalsEnabled, register the HotspotInternalsMBean.
+        // In the event of any error, we just turn off the option and continue.
+        if (config.isHotspotInternalsEnabled()) {
+            // If we have been given a remote pid, it means we ran from the console and so want to inject the
+            // internals agent into the remote jvm to register the HotspotInternalsMBean...
+            if (config.getRemoteJvmPid() > 0) {
+                try {
+                    CodeSource src = Controller.class.getProtectionDomain().getCodeSource(); // get this top4j-cli jar
+                    if (src != null) {
+                        String jar = src.getLocation().getPath();
+                        VirtualMachine vm = VirtualMachine.attach(String.valueOf(config.getRemoteJvmPid()));
+                        vm.loadAgent(jar.toString());
+                        LOGGER.finest("instrumented remote JVM for hotspot internals");
+                    }
+                } catch (Throwable t) {
+                    // NB This can throw an Exception due to handling of the return code from the agent and yet still work.
+                    LOGGER.finest("Error injecting agent into remote JVM for hotpspot internals: " + t.getMessage());
+                }
+            }
+            // Otherwise, just bind the bean locally
+            else {
+                try {
+                    // instantiate new MBeanHelper used to access Internals MBean attributes and operations
+                    MBeanHelper mbeanHelper = new MBeanHelper(Constants.INTERNALS_STATS_TYPE);
+                    // instantiate new MBean
+                    HotspotInternals mbean = new HotspotInternals();
+                    // register MBean with MBean server
+                    mbeanHelper.registerMBean(mbean);
+                }
+                catch (Exception e) {
+                    LOGGER.finest("Failed to initialise HotspotInternals MBean due to " + e.getMessage());
+                }
+            }
+
+            // Now test that the bean works - if not, turn off the option
+            try {
+                HotspotInternalsMBean proxy = JMX.newMBeanProxy(config.getMBeanServerConnection(), new HotspotInternals().getObjectName(), HotspotInternalsMBean.class);
+                proxy.getInternalThreadCpuTimes();
+            }
+            catch (Throwable t) {
+                config.setHotspotInternalsEnabled(false);
+                LOGGER.fine("Hotspot internals not available");
+            }
         }
 
         try {

@@ -51,6 +51,9 @@ public final class Constants {
     // JMX MXBean agent stats type
     public static final String AGENT_STATS_TYPE = "AgentStats";
 
+    // JMX MXBean internals stats type
+    public static final String INTERNALS_STATS_TYPE = "Internals";
+
     // JMX MXBean stats logger type
     public static final String STATS_LOGGER_TYPE = "StatsLogger";
 

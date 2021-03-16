@@ -31,6 +31,7 @@
           <archive>
             <manifestEntries>
               <Main-Class>io.top4j.cli.Top4J</Main-Class>
+              <Agent-Class>io.top4j.javaagent.mbeans.jvm.internals.HotspotInternalsAgent</Agent-Class>
             </manifestEntries>
           </archive>
         </configuration>

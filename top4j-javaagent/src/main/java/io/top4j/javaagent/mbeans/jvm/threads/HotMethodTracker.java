@@ -56,7 +56,7 @@ public class HotMethodTracker extends TimerTask {
             long threadId = topThread.getThreadId();
             // get topThread state
             Thread.State threadState = topThread.getThreadState();
-            if (stackTrace != null && threadName != null && threadId != 0 && threadState.equals(Thread.State.RUNNABLE)) {
+            if (stackTrace != null && threadName != null && threadId > 0 && threadState.equals(Thread.State.RUNNABLE)) {
                 // add top thread stack trace, name and ID to hotMethods
                 hotMethods.addHotMethod(topThread.getStackTraceElements(), topThread.getThreadName(), topThread.getThreadId());
             }

@@ -155,7 +155,7 @@ public class ThreadHelper {
 
     public long getThreadCpuTime(long threadId) {
 
-        if (threadId == 0) {
+        if (threadId <= 0) {
             return -1;
         }
 

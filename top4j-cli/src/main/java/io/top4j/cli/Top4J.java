@@ -33,10 +33,13 @@ import javax.management.remote.JMXConnector;
 import javax.management.remote.JMXConnectorFactory;
 import javax.management.remote.JMXServiceURL;
 import java.io.IOException;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.List;
+import java.util.Scanner;
 import java.util.Timer;
 import java.util.TimerTask;
-import java.util.Scanner;
 import java.util.logging.Logger;
 
 public class Top4J {
@@ -51,8 +54,14 @@ public class Top4J {
     private static int threadCacheTTL = 15000;
     // set default start up verbosity
     private static boolean verbose = false;
+    private static boolean hotspotInternalsEnabled = false;
 
     private static final Logger LOGGER = Logger.getLogger(Top4J.class.getName());
+
+    static {
+        if (!isJava9Plus())
+            addToolsJarToClasspath(); // Java8 and below require this for connect api (vm.loadAgent)
+    }
 
     public static void main(String[] args) throws Exception {
 
@@ -75,9 +84,18 @@ public class Top4J {
         // instantiate new userInput used to share user entered input between the consoleReader and the consoleController
         UserInput userInput = new UserInput();
 
+        try {
+            // verify we have located the attach api at this point, else abort elegantly
+            Class.forName("com.sun.tools.attach.VirtualMachine");
+        } catch (Exception e) {
+            LOGGER.severe("Unable to locate Attach API - aborting");
+            return 1;
+        }
+
         // instantiate javaProcessManager
+
         JavaProcessManager javaProcessManager;
-        if (isJava9Plus()) {
+        if (isJava8Plus()) {
             javaProcessManager = new Jdk9JavaProcessManager();
         } else {
             ClassLoader classLoader = JConsoleClassLoaderFactory.getClassLoader();
@@ -88,6 +106,7 @@ public class Top4J {
         int jvmPid = 0;
         // initialise jvmDisplayName variable used to store JVM display name
         String jvmDisplayName = "";
+        int displayThreadCount = 10;
 
         // define command-line args
         Options options = defineOptions();
@@ -120,6 +139,16 @@ public class Top4J {
             // override default consoleRefreshPeriod
             consoleRefreshPeriod = Integer.parseInt(userProvidedDelayInterval) * 1000;
         }
+        if (cmd.hasOption("t")) {
+            String userThreadCount = cmd.getOptionValue("t");
+            if (!isNumeric(userThreadCount)) {
+                // user provided JVM PID is *not* a number - return usage message and exit with error code
+                LOGGER.severe("ERROR: -t thread count provided via command-line argument is not a number: " + userThreadCount);
+                return 1;
+            }
+            // user has provided a command-line arg and it's a valid number - use the arg as the jvmPid
+            displayThreadCount = Integer.parseInt(userThreadCount);
+        }
         if (cmd.hasOption("v")) {
             // enable verbose start up messages
             verbose = true;
@@ -131,6 +160,11 @@ public class Top4J {
         if (cmd.hasOption("C")) {
             // user has requested that the thread usage cache is enabled
             threadCacheEnabled = true;
+        }
+        if (cmd.hasOption("i")) {
+            // user has requested hotspot internal threads etc be exposed
+            // nb this option will only be offered on Java8+ (see defineOptions)
+            hotspotInternalsEnabled = true;
         }
         if (cmd.hasOption("S")) {
             // user has provided a thread usage cache size via the command-line
@@ -238,9 +272,6 @@ public class Top4J {
         MBeanServerConnection mbsc = connector.getMBeanServerConnection();
         LOGGER.info("Successfully connected to target JVM JMX MBean Server.");
 
-        // set displayThreadCount
-        int displayThreadCount = 10;
-
         // define Top4J config overrides
         String configOverrides = "collector.poll.frequency=" + consoleRefreshPeriod + "," +
                 "log.properties.on.startup=" + verbose + "," +
@@ -250,9 +281,13 @@ public class Top4J {
                 "thread.usage.cache.size=" + threadCacheSize + "," +
                 "thread.usage.cache.ttl=" + threadCacheTTL + "," +
                 "top.thread.count=" + displayThreadCount + "," +
-                "blocked.thread.count=" + displayThreadCount;
+                "blocked.thread.count=" + displayThreadCount + "," +
+                "hotspot.internals.enabled=" + hotspotInternalsEnabled;
         // initialise Top4J configurator
         Configurator config = new Configurator(mbsc, configOverrides);
+
+        if (hotspotInternalsEnabled)
+            config.setRemoteJvmPid(jvmPid);
 
         // create and start Top4J controller thread
         LOGGER.info("Top4J: Initialising Java agent.");
@@ -263,14 +298,30 @@ public class Top4J {
         // create new DisplayConfig to pass to ConsoleController
         DisplayConfig displayConfig = new DisplayConfig(displayThreadCount, jvmPid, jvmDisplayName);
         // create new TimerTask to run Top4J CLI ConsoleController thread
-        TimerTask consoleController = new ConsoleController(consoleReader, userInput, mbsc, displayConfig);
+        //ConsoleController consoleController = new ConsoleController(consoleReader, userInput, mbsc, displayConfig);
         // create new Timer to schedule ConsoleController thread
-        Timer timer = new Timer("Top4J Console Controller", true);
+        //Timer timer = new Timer("Top4J Console Controller", true);
         // run Top4J Console Controller at fixed interval
-        timer.scheduleAtFixedRate(consoleController, 0, consoleRefreshPeriod);
+        //timer.scheduleAtFixedRate(consoleController, 0, consoleRefreshPeriod);
 
+
+        boolean extendedMode = displayThreadCount > 10; // handle multi-digit numbers?
+        StringBuilder number = new StringBuilder();
+        boolean parsingNumber = false;
+        Timer timer = null;
+        ConsoleController consoleController = new ConsoleController(consoleReader, userInput, mbsc, displayConfig);
+        ConsoleControllerTask consoleControllerTask = null;
         while (true) {
+            if (!parsingNumber) {
+                // display is more responsive if we schedule/re-schedule around user-input; previously
+                // after entering key we had to wait for next screen update cycle...
+                consoleControllerTask = new ConsoleControllerTask(consoleController);
+                timer = new Timer("Top4J Console Controller", true);
+                timer.scheduleAtFixedRate(consoleControllerTask, 0, consoleRefreshPeriod);
+            }
             Integer input = consoleReader.readCharacter();
+            if (!parsingNumber)
+                timer.cancel(); // suspend display while we handle user input
             Character inputChar = (char) Integer.valueOf(input).intValue();
             String inputText = inputChar.toString();
             if (inputText.equals("q")) {
@@ -285,8 +336,40 @@ public class Top4J {
                 return 0;
             }
             if (Character.isDigit(inputChar)) {
-                userInput.setIsDigit(true);
-            } else if (inputText.equals("m")) {
+                if (extendedMode) {
+                    try {
+                        userInput.consoleLock.lock(); // ensure ConsoleController not updating screen
+                        consoleController.pause(true);
+                        number.append(inputChar);
+                        parsingNumber = true;
+                        consoleReader.print(String.valueOf(inputChar));
+                        consoleReader.flush();
+                    } finally {
+                        // nb ConsoleController is set to paused so will not update screen when we now unlock
+                        userInput.consoleLock.unlock();
+                    }
+                } else {
+                    userInput.setIsDigit(true);
+                    userInput.setText(inputText);
+                }
+                continue;
+            } else if (parsingNumber) {
+                try {
+                    if (inputText.equals("\r") || inputText.equals("\n")) {
+                        userInput.setText(number.toString());
+                        userInput.setIsDigit(true);
+                        continue;
+                    }
+                    // else extended number handling aborted - will fall through to non-number handling below
+                } finally {
+                    parsingNumber = false;
+                    number = new StringBuilder();
+                    consoleController.pause(false);
+                }
+            }
+
+            // non-number handling (no numbers will get this far)
+            if (inputText.equals("m")) {
                 userInput.setIsDigit(false);
             } else {
                 userInput.setIsDigit(false);
@@ -323,8 +406,15 @@ public class Top4J {
         // add h option
         options.addOption("h", "help", false, "Print this message");
 
+        // add i option
+        if (isJava8Plus())
+            options.addOption("i", "internals", false, "Report Hotspot internal threads");
+
         // add p option
         options.addOption("p", "pid", true, "Monitor PID");
+
+        // add t option - this doesn't currently work due to the MXBean config
+        options.addOption("t", "threads", true, "Number of top threads to display");
 
         // add v option
         options.addOption("v", "verbose", false, "Print configuration properties on start up");
@@ -349,4 +439,33 @@ public class Top4J {
     private static boolean isJava9Plus() {
         return SystemUtils.isJavaVersionAtLeast(JavaVersion.JAVA_9);
     }
+
+    private static boolean isJava8Plus() {
+        return SystemUtils.isJavaVersionAtLeast(JavaVersion.JAVA_1_8);
+    }
+
+    /**
+     * Add tools.jar to our classpath.
+     */
+    private static void addToolsJarToClasspath() {
+
+        try {
+            // We'll get the jars from jmxterm's JConsoleClassLoaderFactory rather than working it out ourselves.
+            URL[] urls = ((URLClassLoader) JConsoleClassLoaderFactory.getClassLoader()).getURLs();
+
+            // Then use the protected addURL method to append them to our own classloader!
+            Method addURL = URLClassLoader.class.getDeclaredMethod("addURL", new Class[]{URL.class});
+            addURL.setAccessible(true);
+            for (URL url : urls) {
+                addURL.invoke(ClassLoader.getSystemClassLoader(), new Object[]{url});
+                LOGGER.finest("added to classpath: " + url);
+            }
+
+        } catch (Exception e) {
+            LOGGER.finest("Failed to add tools.jar to classpath: " + e.getMessage());
+        }
+    }
+
 }
+
+

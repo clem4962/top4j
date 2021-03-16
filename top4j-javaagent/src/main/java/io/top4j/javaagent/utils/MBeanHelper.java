@@ -40,6 +40,20 @@ public class MBeanHelper {
     private MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
     private ObjectName objectName;
 
+    public MBeanHelper(String type) throws MBeanInitException {
+
+        ObjectName objectName = null;
+
+        try {
+            objectName = new ObjectName(Constants.DOMAIN + ":type=" + type);
+        } catch (MalformedObjectNameException e) {
+            throw new MBeanInitException(e, "JMX MalformedObjectNameException: " + e.getMessage());
+        }
+
+        this.objectName = objectName;
+
+    }
+
     public MBeanHelper(String type, String statsType) throws MBeanInitException {
 
         ObjectName objectName = null;

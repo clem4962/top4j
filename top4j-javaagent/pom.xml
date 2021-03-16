@@ -1,6 +1,6 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-
   <parent>
     <groupId>io.top4j</groupId>
     <artifactId>top4j-parent</artifactId>
@@ -12,7 +12,8 @@
 
   <name>Top4J JavaAgent</name>
   <description>
-    Top4J is a lightweight, low overhead, production-ready performance analysis tool for the Java runtime environment.
+    Top4J is a lightweight, low overhead, production-ready performance analysis tool for the Java runtime
+    environment.
   </description>
   <url>https://github.com/OpenAnswers/top4j</url>
 
@@ -36,5 +37,13 @@
       </plugin>
     </plugins>
   </build>
-
+  <dependencies>
+    <dependency>
+      <groupId>com.sun</groupId>
+      <artifactId>tools</artifactId>
+      <version>1.7.0_79</version>
+      <scope>system</scope>
+      <systemPath>${java.home}/../lib/tools.jar</systemPath>
+    </dependency>
+  </dependencies>
 </project>

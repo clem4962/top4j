@@ -204,6 +204,11 @@ public class ThreadStats implements ThreadStatsMXBean {
     }
 
     @Override
+    public long getInternalThreadCount() {
+        return this.threadUsage.getInternalThreadCount();
+    }
+
+    @Override
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
     }
@@ -222,5 +227,8 @@ public class ThreadStats implements ThreadStatsMXBean {
     public String getFailureReason() {
         return this.failureReason;
     }
+
+    @Override
+    public double getPauseTimeOverhead() { return this.threadUsage.getPauseTimeOverhead(); }
 
 }

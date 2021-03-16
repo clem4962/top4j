@@ -144,4 +144,13 @@ public interface ThreadStatsMXBean extends StatsMXBean {
      */
     long getTimedWaitingThreadCount();
 
+    /**
+     * @return number of identified internal threads, if enabled and successfully retrieved; -1 means data not available.
+     */
+    long getInternalThreadCount();
+
+    /**
+     * @return total pause time (safepoint time) as the percentage of real time (wall clock time)
+     */
+    double getPauseTimeOverhead();
 }
