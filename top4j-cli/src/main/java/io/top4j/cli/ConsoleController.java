@@ -196,9 +196,11 @@ public class ConsoleController { //extends TimerTask {
     //@Override
     public void run() {
 
+        boolean welockedit = false;
         try {
             if (!userInput.consoleLock.tryLock()) // do nothing if Top4j user interaction is happening
                 return;
+            welockedit = true;
             if (this.paused)
                 return;
             // update console screen
@@ -209,7 +211,8 @@ public class ConsoleController { //extends TimerTask {
             LOGGER.severe(e.getMessage());
             System.exit(1);
         } finally {
-            userInput.consoleLock.unlock();
+            if (welockedit)
+                userInput.consoleLock.unlock();
         }
 
     }
