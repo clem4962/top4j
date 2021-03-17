@@ -18,6 +18,7 @@ package io.top4j.javaagent.controller;
 
 import com.sun.tools.attach.VirtualMachine;
 
+import java.nio.file.Paths;
 import java.security.CodeSource;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -67,7 +68,7 @@ public final class Controller extends Thread {
                 try {
                     CodeSource src = Controller.class.getProtectionDomain().getCodeSource(); // get this top4j-cli jar
                     if (src != null) {
-                        String jar = src.getLocation().getPath();
+                        String jar = Paths.get(src.getLocation().toURI()).toString();
                         VirtualMachine vm = VirtualMachine.attach(String.valueOf(config.getRemoteJvmPid()));
                         vm.loadAgent(jar.toString());
                         LOGGER.finest("instrumented remote JVM for hotspot internals");
