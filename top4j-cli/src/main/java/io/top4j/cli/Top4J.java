@@ -381,7 +381,7 @@ public class Top4J {
         // add p option
         options.addOption("p", "pid", true, "Monitor PID");
 
-        // add t option - this doesn't currently work due to the MXBean config
+        // add t option 
         options.addOption("t", "threads", true, "Number of top threads to display");
 
         // add v option
