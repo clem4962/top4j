@@ -260,9 +260,7 @@ public class ConsoleController extends TimerTask {
                 threadStatsMXBean.getWaitingThreadCount() + " waiting,   " +
                 threadStatsMXBean.getTimedWaitingThreadCount() + " timed waiting,   " +
                 threadStatsMXBean.getBlockedThreadCount() + " blocked\n");
-        sb.append("%Cpu(s): " + String.format("%.2f", threadStatsMXBean.getCpuUsage()) + " total,  " +
-                String.format("%.2f", threadStatsMXBean.getUserCpuUsage()) + " user,  " +
-                String.format("%.2f", threadStatsMXBean.getSysCpuUsage()) + " sys\n");
+        sb.append("%Cpu(s): " + getCpuUsage()+ "\n");
         sb.append("Heap Util(%):        " + String.format("%.2f", heapStatsMXBean.getEdenSpaceUtil()) + " eden,        " +
                 String.format("%.2f", heapStatsMXBean.getSurvivorSpaceUtil()) + " survivor,        " +
                 String.format("%.2f", heapStatsMXBean.getTenuredHeapUtil()) + " tenured\n");
@@ -272,6 +270,22 @@ public class ConsoleController extends TimerTask {
         sb.append("GC Overhead(%):      " + String.format("%.4f", gcStatsMXBean.getGcOverhead()) + "\n");
 
         return sb.toString();
+    }
+
+    private String getCpuUsage() {
+        double processCpu = threadStatsMXBean.getProcessCpuUsage();
+        if (processCpu >= 0) {
+            double threadCpu = threadStatsMXBean.getCpuUsage();
+            double threadUserCpu = threadStatsMXBean.getUserCpuUsage();
+            double threadSysCpu = threadStatsMXBean.getSysCpuUsage();
+            return String.format("%.2f", processCpu) + " total, " +
+                    String.format("%.2f", threadCpu) + " live threads, " +
+                    String.format("%.2f", processCpu - threadCpu) + " internal threads";
+        } else { // process cpu not available
+            return String.format("%.2f", threadStatsMXBean.getCpuUsage()) + " total,  " +
+                    String.format("%.2f", threadStatsMXBean.getUserCpuUsage()) + " user,  " +
+                    String.format("%.2f", threadStatsMXBean.getSysCpuUsage()) + " sys\n";
+        }
     }
 
     private String createTopThreadsScreen() {
